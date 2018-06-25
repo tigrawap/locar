@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/gobwas/glob"
-	"github.com/jessevdk/go-flags"
 	"log"
 	"os"
 	"path/filepath"
@@ -13,6 +11,9 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/gobwas/glob"
+	"github.com/jessevdk/go-flags"
 )
 
 /*
@@ -320,11 +321,9 @@ func (e *Explorer) readdir(dir string) {
 }
 
 type Options struct {
-	// Example of a value name
 	Resilient bool `long:"resilient" description:"Do not stop on errors, instead print to stderr"`
 	Threads   int  `short:"j" long:"jobs" description:"Number of jobs(threads)" default:"128"`
 
-	// Example of a slice of strings
 	Exclude []string `short:"x" long:"exclude" description:"Patterns to exclude. Can be specified multiple times"`
 	Filter  []string `short:"f" long:"filter" description:"Patterns to filter by. Can be specified multiple times"`
 
