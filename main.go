@@ -97,9 +97,6 @@ func (e *Explorer) SetThreads(threads int) {
 	}
 	e.threads = int64(threads)
 	chanBuff := e.threads
-	if chanBuff < 1024 {
-		chanBuff = 1024
-	}
 	e.directories = make(chan string, chanBuff)
 }
 
