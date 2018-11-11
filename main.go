@@ -42,12 +42,18 @@ type dirStore struct {
 	store []string
 }
 
+type Result struct {
+	name string
+	ino  uint64
+}
+
 type Explorer struct {
-	results           chan string
+	results           chan Result
 	directories       chan string
 	dirStore          dirStore
 	inFlight          int64
 	resilient         bool
+	inodes            bool
 	doneTails         controlChannel
 	doneDirectories   controlChannel
 	ctx               context.Context
@@ -66,7 +72,7 @@ type Explorer struct {
 
 func NewExplorer(ctx context.Context) *Explorer {
 	e := &Explorer{}
-	e.results = make(chan string, 1024)
+	e.results = make(chan Result, 1024)
 	e.doneTails = make(controlChannel)
 	e.doneDirectories = make(controlChannel)
 	e.ctx = ctx
@@ -109,7 +115,11 @@ func (e *Explorer) dumpResults() {
 		select {
 		case file, ok := <-e.results:
 			if ok {
-				fmt.Println(file)
+				if e.inodes{
+					fmt.Println(file.name, file.ino)
+				}else{
+					fmt.Println(file.name)
+				}
 			} else {
 				return
 			}
@@ -299,19 +309,19 @@ func (e *Explorer) readdir(dir string) {
 			switch dirent.Type {
 			case syscall.DT_DIR:
 				if e.includeDirs || e.includeAny {
-					e.results <- fullpath + string(filepath.Separator)
+					e.results <- Result{fullpath + string(filepath.Separator), dirent.Ino}
 				}
 			case syscall.DT_REG:
 				if e.includeFiles || e.includeAny {
-					e.results <- fullpath
+					e.results <- Result{fullpath, dirent.Ino}
 				}
 			case syscall.DT_LNK:
 				if e.includeLinks || e.includeAny {
-					e.results <- fullpath
+					e.results <- Result{fullpath, dirent.Ino}
 				}
 			default:
 				if e.includeAny {
-					e.results <- fullpath
+					e.results <- Result{fullpath, dirent.Ino}
 				} else {
 					log.Printf("Skipped record: %s[%s]\n", string(name), entryType(dirent.Type))
 				}
@@ -322,6 +332,7 @@ func (e *Explorer) readdir(dir string) {
 
 type Options struct {
 	Resilient bool `long:"resilient" description:"Do not stop on errors, instead print to stderr"`
+	Inodes    bool `long:"inodes" description:"Output inodes along with filenames"`
 	Threads   int  `short:"j" long:"jobs" description:"Number of jobs(threads)" default:"128"`
 
 	Exclude []string `short:"x" long:"exclude" description:"Patterns to exclude. Can be specified multiple times"`
@@ -367,6 +378,7 @@ func main() {
 	explorer.resilient = opts.Resilient
 	explorer.SetIncludedTypes(opts.Type)
 	explorer.SetThreads(opts.Threads)
+	explorer.inodes = opts.Inodes
 
 	for _, exclude := range opts.Exclude {
 		explorer.excludes = append(explorer.excludes, glob.MustCompile(exclude))
