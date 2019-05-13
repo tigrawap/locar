@@ -11,7 +11,6 @@ OS = $(word 1, $(PLATFORM))
 ARCH = $(word 2, $(PLATFORM))
 
 EXENAME=locar
-CMDSOURCES = $(wildcard *.go)
 GOBUILD=$(GO) build
 
 .PHONY: makedir get_deps build test clean prepare default all $(PLATFORMS)
@@ -31,7 +30,7 @@ get_deps:
 
 build:
 	@echo -n "run build... "
-	@$(GOBUILD) -o $(BINPATH)/$(EXENAME) $(CMDSOURCES)
+	@$(GOBUILD) -o $(BINPATH)/$(EXENAME)
 	@echo ok
 
 test:

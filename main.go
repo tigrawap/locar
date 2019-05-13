@@ -309,19 +309,19 @@ func (e *Explorer) readdir(dir string) {
 			switch dirent.Type {
 			case syscall.DT_DIR:
 				if e.includeDirs || e.includeAny {
-					e.results <- Result{fullpath + string(filepath.Separator), dirent.Ino}
+					e.results <- Result{fullpath + string(filepath.Separator), GetIno(dirent)}
 				}
 			case syscall.DT_REG:
 				if e.includeFiles || e.includeAny {
-					e.results <- Result{fullpath, dirent.Ino}
+					e.results <- Result{fullpath, GetIno(dirent)}
 				}
 			case syscall.DT_LNK:
 				if e.includeLinks || e.includeAny {
-					e.results <- Result{fullpath, dirent.Ino}
+					e.results <- Result{fullpath, GetIno(dirent)}
 				}
 			default:
 				if e.includeAny {
-					e.results <- Result{fullpath, dirent.Ino}
+					e.results <- Result{fullpath, GetIno(dirent)}
 				} else {
 					log.Printf("Skipped record: %s[%s]\n", string(name), entryType(dirent.Type))
 				}
