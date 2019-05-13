@@ -115,9 +115,9 @@ func (e *Explorer) dumpResults() {
 		select {
 		case file, ok := <-e.results:
 			if ok {
-				if e.inodes{
+				if e.inodes {
 					fmt.Println(file.name, file.ino)
-				}else{
+				} else {
 					fmt.Println(file.name)
 				}
 			} else {
