@@ -141,7 +141,7 @@ func (e *Explorer) dumpResults() {
 		fmt.Print(outputBuffer.String())
 		outputBuffer.Truncate(0)
 	}
-	writeData := func(data []Result){
+	writeData := func(data []Result) {
 		flushLock.Lock()
 		for _, result = range data {
 			done++
@@ -158,7 +158,7 @@ func (e *Explorer) dumpResults() {
 		flushGroup.Done()
 	}
 
-	flushSlice := func(data []Result){
+	flushSlice := func(data []Result) {
 		newSlice := make([]Result, len(data))
 		copy(newSlice, data)
 		flushGroup.Add(1)
@@ -176,7 +176,7 @@ func (e *Explorer) dumpResults() {
 			time.Sleep(10 * time.Microsecond)
 			if len(e.resultStore.store) == 0 && e.ctx.Err() != nil {
 				e.resultStore.Lock()
-				if len(e.resultStore.store) == 0 && atomic.LoadInt64(&e.inFlight) == 0{
+				if len(e.resultStore.store) == 0 && atomic.LoadInt64(&e.inFlight) == 0 {
 					e.resultStore.Unlock()
 					return
 				}
@@ -222,7 +222,7 @@ func (e *Explorer) flushStoreLoop() {
 	}
 }
 
-func (e *Explorer) addResults(results [] Result) {
+func (e *Explorer) addResults(results []Result) {
 	e.resultStore.Lock()
 	e.resultStore.store = append(e.resultStore.store, results...)
 	e.resultStore.Unlock()
