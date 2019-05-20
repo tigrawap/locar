@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -38,8 +40,13 @@ type controlChannel chan null
 const direntNameOffset = uint64(unsafe.Offsetof(syscall.Dirent{}.Name))
 
 type dirStore struct {
-	sync.RWMutex
+	sync.Mutex
 	store []string
+}
+
+type resultStore struct {
+	sync.Mutex
+	store []Result
 }
 
 type Result struct {
@@ -48,9 +55,9 @@ type Result struct {
 }
 
 type Explorer struct {
-	results           chan Result
 	directories       chan string
 	dirStore          dirStore
+	resultStore       resultStore
 	inFlight          int64
 	resilient         bool
 	inodes            bool
@@ -61,7 +68,10 @@ type Explorer struct {
 	includes          []glob.Glob
 	flushStoreRequest controlChannel
 	threads           int64
+	rateLimiter       chan null
 	buffPool          sync.Pool
+	resultsPool       sync.Pool
+	debugInFlight     int64
 
 	includeDirs  bool
 	includeFiles bool
@@ -72,12 +82,14 @@ type Explorer struct {
 
 func NewExplorer(ctx context.Context) *Explorer {
 	e := &Explorer{}
-	e.results = make(chan Result, 1024)
 	e.doneTails = make(controlChannel)
 	e.doneDirectories = make(controlChannel)
 	e.ctx = ctx
 	e.buffPool.New = func() interface{} {
 		return make([]byte, 64*1024)
+	}
+	e.resultsPool.New = func() interface{} {
+		return make([]Result, 0, 1024)
 	}
 	return e
 }
@@ -103,28 +115,73 @@ func (e *Explorer) SetThreads(threads int) {
 	}
 	e.threads = int64(threads)
 	chanBuff := e.threads
-	if chanBuff < 1024 {
-		chanBuff = 1024
+	if chanBuff < 4096 {
+		chanBuff = 4096
 	}
 	e.directories = make(chan string, chanBuff)
+	//go func() {
+	//	for {
+	//		time.Sleep(100 * time.Millisecond)
+	//		log.Println(e.debugInFlight)
+	//	}
+	//}()
 }
 
 func (e *Explorer) dumpResults() {
 	defer func() { e.doneTails <- nullv }()
-	for {
-		select {
-		case file, ok := <-e.results:
-			if ok {
-				if e.inodes {
-					fmt.Println(file.name, file.ino)
-				} else {
-					fmt.Println(file.name)
-				}
-			} else {
-				return
+	var done int64
+	var outputBuffer bytes.Buffer
+	var result Result
+
+	var flushGroup sync.WaitGroup
+	defer flushGroup.Wait()
+	var flushLock sync.Mutex
+
+	flush := func() {
+		fmt.Print(outputBuffer.String())
+		outputBuffer.Truncate(0)
+	}
+	writeData := func(data []Result){
+		flushLock.Lock()
+		for _, result = range data {
+			done++
+			outputBuffer.WriteString(result.name)
+			if e.inodes {
+				outputBuffer.WriteString(" " + strconv.FormatUint(result.ino, 10))
 			}
-		case <-e.ctx.Done():
-			return
+			outputBuffer.WriteString("\n")
+			if outputBuffer.Len() > 4*1024 {
+				flush()
+			}
+		}
+		flushLock.Unlock()
+		flushGroup.Done()
+	}
+
+	flushSlice := func(data []Result){
+		newSlice := make([]Result, len(data))
+		copy(newSlice, data)
+		flushGroup.Add(1)
+		go writeData(newSlice)
+	}
+
+	defer flush()
+	for {
+		if len(e.resultStore.store) != 0 {
+			e.resultStore.Lock()
+			flushSlice(e.resultStore.store)
+			e.resultStore.store = e.resultStore.store[:0]
+			e.resultStore.Unlock()
+		} else {
+			time.Sleep(10 * time.Microsecond)
+			if len(e.resultStore.store) == 0 && e.ctx.Err() != nil {
+				e.resultStore.Lock()
+				if len(e.resultStore.store) == 0 && atomic.LoadInt64(&e.inFlight) == 0{
+					e.resultStore.Unlock()
+					return
+				}
+				e.resultStore.Unlock()
+			}
 		}
 	}
 }
@@ -165,6 +222,12 @@ func (e *Explorer) flushStoreLoop() {
 	}
 }
 
+func (e *Explorer) addResults(results [] Result) {
+	e.resultStore.Lock()
+	e.resultStore.store = append(e.resultStore.store, results...)
+	e.resultStore.Unlock()
+}
+
 func (e *Explorer) addDir(dir string) {
 	inFlight := atomic.AddInt64(&e.inFlight, 1)
 	select {
@@ -186,13 +249,13 @@ func (e *Explorer) start() {
 	e.started = true
 	go e.dumpResults()
 	go e.flushStoreLoop()
-	rateLimiter := make(chan null, e.threads)
+	e.rateLimiter = make(chan null, e.threads)
 	go func() {
 		for directory := range e.directories {
-			rateLimiter <- nullv
+			e.rateLimiter <- nullv
 			go func(dir string) {
 				e.readdir(dir)
-				<-rateLimiter
+				<-e.rateLimiter
 				current := atomic.AddInt64(&e.inFlight, -1)
 				if current == 0 {
 					close(e.directories)
@@ -200,7 +263,6 @@ func (e *Explorer) start() {
 			}(directory)
 		}
 		e.doneDirectories <- nullv
-		close(e.results)
 	}()
 }
 
@@ -253,6 +315,18 @@ func (e *Explorer) readdir(dir string) {
 
 	buff := e.buffPool.Get().([]byte)
 	defer e.buffPool.Put(buff)
+
+	results := e.resultsPool.Get().([]Result)
+	defer e.resultsPool.Put(results)
+
+	clearResults := func() {
+		if len(results) != 0 {
+			e.addResults(results)
+		}
+		results = results[:0]
+	}
+	defer clearResults()
+
 	var name []byte
 	var fullpath string
 	var omittedByInclude bool
@@ -309,22 +383,25 @@ func (e *Explorer) readdir(dir string) {
 			switch dirent.Type {
 			case syscall.DT_DIR:
 				if e.includeDirs || e.includeAny {
-					e.results <- Result{fullpath + string(filepath.Separator), GetIno(dirent)}
+					results = append(results, Result{fullpath + string(filepath.Separator), GetIno(dirent)})
 				}
 			case syscall.DT_REG:
 				if e.includeFiles || e.includeAny {
-					e.results <- Result{fullpath, GetIno(dirent)}
+					results = append(results, Result{fullpath, GetIno(dirent)})
 				}
 			case syscall.DT_LNK:
 				if e.includeLinks || e.includeAny {
-					e.results <- Result{fullpath, GetIno(dirent)}
+					results = append(results, Result{fullpath, GetIno(dirent)})
 				}
 			default:
 				if e.includeAny {
-					e.results <- Result{fullpath, GetIno(dirent)}
+					results = append(results, Result{fullpath, GetIno(dirent)})
 				} else {
 					log.Printf("Skipped record: %s[%s]\n", string(name), entryType(dirent.Type))
 				}
+			}
+			if len(results) == 1024 {
+				clearResults()
 			}
 		}
 	}
