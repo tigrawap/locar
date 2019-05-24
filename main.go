@@ -46,7 +46,8 @@ type dirStore struct {
 
 type resultStore struct {
 	sync.Mutex
-	store []Result
+	store  []Result
+	length int
 }
 
 type Result struct {
@@ -55,23 +56,24 @@ type Result struct {
 }
 
 type Explorer struct {
-	directories       chan string
-	dirStore          dirStore
-	resultStore       resultStore
-	inFlight          int64
-	resilient         bool
-	inodes            bool
-	doneTails         controlChannel
-	doneDirectories   controlChannel
-	ctx               context.Context
-	excludes          []glob.Glob
-	includes          []glob.Glob
-	flushStoreRequest controlChannel
-	threads           int64
-	rateLimiter       chan null
-	buffPool          sync.Pool
-	resultsPool       sync.Pool
-	debugInFlight     int64
+	directories         chan string
+	dirStore            dirStore
+	resultStore         resultStore
+	inFlight            int64
+	resilient           bool
+	inodes              bool
+	doneTails           controlChannel
+	doneDirectories     controlChannel
+	doneDirectoriesFlag bool
+	ctx                 context.Context
+	excludes            []glob.Glob
+	includes            []glob.Glob
+	flushStoreRequest   controlChannel
+	threads             int64
+	rateLimiter         chan null
+	buffPool            sync.Pool
+	resultsPool         sync.Pool
+	debugInFlight       int64
 
 	includeDirs  bool
 	includeFiles bool
@@ -133,16 +135,17 @@ func (e *Explorer) dumpResults() {
 	var outputBuffer bytes.Buffer
 	var result Result
 
-	var flushGroup sync.WaitGroup
-	defer flushGroup.Wait()
-	var flushLock sync.Mutex
+	var writeSliceLock sync.WaitGroup
+	var writeLock sync.Mutex
 
 	flush := func() {
 		fmt.Print(outputBuffer.String())
 		outputBuffer.Truncate(0)
 	}
+	defer flush()
+	defer writeSliceLock.Wait()
 	writeData := func(data []Result) {
-		flushLock.Lock()
+		writeLock.Lock()
 		for _, result = range data {
 			done++
 			outputBuffer.WriteString(result.name)
@@ -154,29 +157,29 @@ func (e *Explorer) dumpResults() {
 				flush()
 			}
 		}
-		flushLock.Unlock()
-		flushGroup.Done()
+		writeLock.Unlock()
+		writeSliceLock.Done()
 	}
 
 	flushSlice := func(data []Result) {
 		newSlice := make([]Result, len(data))
 		copy(newSlice, data)
-		flushGroup.Add(1)
+		writeSliceLock.Add(1)
 		go writeData(newSlice)
 	}
 
-	defer flush()
 	for {
-		if len(e.resultStore.store) != 0 {
+		if e.resultStore.length != 0 {
 			e.resultStore.Lock()
 			flushSlice(e.resultStore.store)
 			e.resultStore.store = e.resultStore.store[:0]
+			e.resultStore.length = 0
 			e.resultStore.Unlock()
 		} else {
 			time.Sleep(10 * time.Microsecond)
-			if len(e.resultStore.store) == 0 && e.ctx.Err() != nil {
+			if e.resultStore.length == 0 {
 				e.resultStore.Lock()
-				if len(e.resultStore.store) == 0 && atomic.LoadInt64(&e.inFlight) == 0 {
+				if e.resultStore.length == 0 && e.doneDirectoriesFlag {
 					e.resultStore.Unlock()
 					return
 				}
@@ -225,6 +228,7 @@ func (e *Explorer) flushStoreLoop() {
 func (e *Explorer) addResults(results []Result) {
 	e.resultStore.Lock()
 	e.resultStore.store = append(e.resultStore.store, results...)
+	e.resultStore.length = len(e.resultStore.store)
 	e.resultStore.Unlock()
 }
 
@@ -270,6 +274,7 @@ func (e *Explorer) done() controlChannel {
 	allDone := make(controlChannel)
 	go func() {
 		<-e.doneDirectories
+		e.doneDirectoriesFlag = true
 		<-e.doneTails
 		allDone <- nullv
 	}()
