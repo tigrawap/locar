@@ -309,10 +309,10 @@ func (e *Explorer) readdir(dir string) {
 	file, err := os.Open(dir)
 	if err != nil {
 		if e.resilient {
-			log.Println(err)
+			log.Println(dir, err)
 			return
 		} else {
-			log.Fatalln(err)
+			log.Fatalln(dir, err)
 		}
 	}
 	defer file.Close()
