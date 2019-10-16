@@ -342,14 +342,16 @@ func (e *Explorer) readdir(dir string) {
 			break
 		}
 		if err != nil {
-			log.Fatalln(err)
+			if e.resilient {
+				log.Println(dir, err)
+				return
+			} else {
+				log.Fatalln(dir, err)
+			}
 		}
 		var offset uint64
 	MAINLOOP:
 		for offset = 0; offset < uint64(dirlength); {
-			if err != nil {
-				log.Fatalln(err)
-			}
 			dirent := (*syscall.Dirent)(unsafe.Pointer(&buff[offset]))
 
 			for i, c := range buff[offset+direntNameOffset:] {
@@ -472,7 +474,7 @@ func main() {
 	for _, directory := range opts.Args.Directories {
 		seed := ExpandHomePath(directory)
 		if err := IsDir(seed); err != nil {
-			log.Fatalln(err)
+			log.Fatalln(seed, err)
 		}
 		explorer.addDir(seed)
 	}
