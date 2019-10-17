@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -39,6 +40,8 @@ type controlChannel chan null
 
 const direntNameOffset = uint64(unsafe.Offsetof(syscall.Dirent{}.Name))
 
+var timeoutError = errors.New("timed out")
+
 type dirStore struct {
 	sync.Mutex
 	store []string
@@ -62,6 +65,7 @@ type Explorer struct {
 	inFlight            int64
 	resilient           bool
 	inodes              bool
+	timeout             time.Duration
 	doneTails           controlChannel
 	doneDirectories     controlChannel
 	doneDirectoriesFlag bool
@@ -306,8 +310,11 @@ func (e *Explorer) readdir(dir string) {
 	if e.ctx.Err() != nil {
 		return
 	}
-	file, err := os.Open(dir)
+	file, err := OpenWithDeadline(dir, e.timeout)
 	if err != nil {
+		if err == timeoutError {
+			err = errors.New(fmt.Sprintf("dir open: %s", err.Error()))
+		}
 		if e.resilient {
 			log.Println(dir, err)
 			return
@@ -337,17 +344,20 @@ func (e *Explorer) readdir(dir string) {
 	var omittedByInclude bool
 	for e.ctx.Err() == nil {
 		omittedByInclude = false
-		dirlength, err := syscall.ReadDirent(fd, buff)
-		if dirlength == 0 {
-			break
-		}
+		dirlength, err := ReadDirentWithDeadline(fd, buff, e.timeout)
 		if err != nil {
+			if err == timeoutError {
+				err = errors.New(fmt.Sprintf("readdir: %s", err.Error()))
+			}
 			if e.resilient {
 				log.Println(dir, err)
 				return
 			} else {
 				log.Fatalln(dir, err)
 			}
+		}
+		if dirlength == 0 {
+			break
 		}
 		var offset uint64
 	MAINLOOP:
@@ -427,6 +437,8 @@ type Options struct {
 	Args struct {
 		Directories []string `positional-arg-name:"directories" description:"Directories to search, using current directory if missing"`
 	} `positional-args:"yes"`
+
+	Timeout time.Duration `long:"timeout" default:"5m" description:"Timeout for readdir operations. Error will be reported, but os thread will be kept hanging"`
 }
 
 func getOpts() *Options {
@@ -463,6 +475,7 @@ func main() {
 	explorer.SetIncludedTypes(opts.Type)
 	explorer.SetThreads(opts.Threads)
 	explorer.inodes = opts.Inodes
+	explorer.timeout = opts.Timeout
 
 	for _, exclude := range opts.Exclude {
 		explorer.excludes = append(explorer.excludes, glob.MustCompile(exclude))
@@ -497,6 +510,34 @@ func main() {
 		os.Exit(130)
 	}
 
+}
+
+func ReadDirentWithDeadline(fd int, buf []byte, timeout time.Duration) (n int, err error) {
+	doneEvent := make(controlChannel)
+	go func() {
+		n, err = syscall.ReadDirent(fd, buf)
+		doneEvent <- nullv
+	}()
+	select {
+	case <-time.After(timeout):
+		return 0, timeoutError
+	case <-doneEvent:
+		return
+	}
+}
+
+func OpenWithDeadline(name string, timeout time.Duration) (f *os.File, e error) {
+	doneEvent := make(controlChannel)
+	go func() {
+		f, e = os.Open(name)
+		doneEvent <- nullv
+	}()
+	select {
+	case <-time.After(timeout):
+		return nil, timeoutError
+	case <-doneEvent:
+		return
+	}
 }
 
 func entryType(direntType uint8) string {
