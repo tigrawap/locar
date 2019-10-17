@@ -58,4 +58,3 @@ func quitOnInterrupt() chan bool {
 	}()
 	return quit
 }
-
