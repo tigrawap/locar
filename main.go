@@ -414,7 +414,7 @@ func (e *Explorer) readdir(dir string) {
 				if e.includeAny {
 					results = append(results, Result{fullpath, GetIno(dirent)})
 				} else {
-					log.Printf("Skipped record: %s[%s]\n", string(name), entryType(dirent.Type))
+					log.Printf("Skipped record: %s iNode<%d>[type:%s]\n", string(name), GetIno(dirent), entryType(dirent.Type))
 				}
 			}
 			if len(results) == 1024 {
@@ -551,6 +551,6 @@ func entryType(direntType uint8) string {
 	case syscall.DT_CHR:
 		return "char"
 	default:
-		return "unknown"
+		return fmt.Sprintf("unknown(%v)", direntType)
 	}
 }
