@@ -414,7 +414,7 @@ func (e *Explorer) readdir(dir string) {
 				if e.includeAny {
 					results = append(results, Result{fullpath, GetIno(dirent)})
 				} else {
-					log.Printf("Skipped record: %s iNode<%d>[type:%s]\n", string(name), GetIno(dirent), entryType(dirent.Type))
+					log.Printf("Skipped record: %s iNode<%d>[type:%s]\n", fullpath, GetIno(dirent), entryType(dirent.Type))
 				}
 			}
 			if len(results) == 1024 {
