@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"golang.org/x/sync/semaphore"
 	"log"
 	"os"
 	"path/filepath"
@@ -79,11 +80,13 @@ type Explorer struct {
 	resultsPool         sync.Pool
 	debugInFlight       int64
 
-	includeDirs  bool
-	includeFiles bool
-	includeLinks bool
-	includeAny   bool
-	started      bool
+	includeDirs    bool
+	includeFiles   bool
+	includeLinks   bool
+	includeAny     bool
+	started        bool
+	resultsThreads int
+	withSizes      bool
 }
 
 func NewExplorer(ctx context.Context) *Explorer {
@@ -141,6 +144,7 @@ func (e *Explorer) dumpResults() {
 
 	var writeSliceLock sync.WaitGroup
 	var writeLock sync.Mutex
+	resultsWorkers := semaphore.NewWeighted(int64(e.resultsThreads))
 
 	flush := func() {
 		fmt.Print(outputBuffer.String())
@@ -148,6 +152,8 @@ func (e *Explorer) dumpResults() {
 	}
 	defer flush()
 	defer writeSliceLock.Wait()
+	ctx := context.TODO()
+
 	writeData := func(data []Result) {
 		writeLock.Lock()
 		for _, result = range data {
@@ -156,6 +162,19 @@ func (e *Explorer) dumpResults() {
 			if e.inodes {
 				outputBuffer.WriteString(" " + strconv.FormatUint(result.ino, 10))
 			}
+			// TODO: Once adding another stat-based processor,
+			// 		 put this into interface for processing and put on outer level
+			//		 But need to make sure not to increase Result struct and do it on the fly
+			if e.withSizes {
+				fileStat, err := os.Lstat(result.name)
+				if err != nil {
+					log.Println(err)
+					outputBuffer.WriteString("0")
+				} else {
+					outputBuffer.WriteString(fmt.Sprintf(" %d", fileStat.Size()))
+				}
+			}
+			// ^ Extract
 			outputBuffer.WriteString("\n")
 			if outputBuffer.Len() > 4*1024 {
 				flush()
@@ -163,20 +182,20 @@ func (e *Explorer) dumpResults() {
 		}
 		writeLock.Unlock()
 		writeSliceLock.Done()
+		resultsWorkers.Release(1)
 	}
 
 	flushSlice := func(data []Result) {
-		newSlice := make([]Result, len(data))
-		copy(newSlice, data)
 		writeSliceLock.Add(1)
-		go writeData(newSlice)
+		_ = resultsWorkers.Acquire(ctx, 1)
+		go writeData(data)
 	}
 
 	for {
 		if e.resultStore.length != 0 {
 			e.resultStore.Lock()
 			flushSlice(e.resultStore.store)
-			e.resultStore.store = e.resultStore.store[:0]
+			e.resultStore.store = make([]Result, 0)
 			e.resultStore.length = 0
 			e.resultStore.Unlock()
 		} else {
@@ -425,9 +444,11 @@ func (e *Explorer) readdir(dir string) {
 }
 
 type Options struct {
-	Resilient bool `long:"resilient" description:"Do not stop on errors, instead print to stderr"`
-	Inodes    bool `long:"inodes" description:"Output inodes along with filenames"`
-	Threads   int  `short:"j" long:"jobs" description:"Number of jobs(threads)" default:"128"`
+	Resilient     bool `long:"resilient" description:"Do not stop on errors, instead print to stderr"`
+	Inodes        bool `long:"inodes" description:"Output inodes along with filenames"`
+	Threads       int  `short:"j" long:"jobs" description:"Number of jobs(threads)" default:"128"`
+	WithSizes     bool `long:"with-size" description:"Output file sizes along with filenames"`
+	ResultThreads int  `long:"result-jobs" description:"Number of jobs for processing results, like doing stats to get file sizes" default:"128"`
 
 	Exclude []string `short:"x" long:"exclude" description:"Patterns to exclude. Can be specified multiple times"`
 	Filter  []string `short:"f" long:"filter" description:"Patterns to filter by. Can be specified multiple times"`
@@ -476,6 +497,8 @@ func main() {
 	explorer.SetThreads(opts.Threads)
 	explorer.inodes = opts.Inodes
 	explorer.timeout = opts.Timeout
+	explorer.resultsThreads = opts.ResultThreads
+	explorer.withSizes = opts.WithSizes
 
 	for _, exclude := range opts.Exclude {
 		explorer.excludes = append(explorer.excludes, glob.MustCompile(exclude))
