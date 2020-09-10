@@ -445,7 +445,7 @@ func (e *Explorer) readdir(dir string) {
 
 type Options struct {
 	Resilient     bool `long:"resilient" description:"DEPRECATED and ignored, resilient is a default, use --stop-on-error if it is undesired behaviour"`
-	StopOnError	  bool `long:"stop-on-error" description:"Aborts scan on any error"`
+	StopOnError   bool `long:"stop-on-error" description:"Aborts scan on any error"`
 	Inodes        bool `long:"inodes" description:"Output inodes along with filenames"`
 	Threads       int  `short:"j" long:"jobs" description:"Number of jobs(threads)" default:"128"`
 	WithSizes     bool `long:"with-size" description:"Output file sizes along with filenames"`
