@@ -66,6 +66,7 @@ type Explorer struct {
 	inFlight            int64
 	resilient           bool
 	inodes              bool
+	raw                 bool
 	timeout             time.Duration
 	doneTails           controlChannel
 	doneDirectories     controlChannel
@@ -158,7 +159,11 @@ func (e *Explorer) dumpResults() {
 		writeLock.Lock()
 		for _, result = range data {
 			done++
-			outputBuffer.WriteString(result.name)
+			if e.raw {
+				outputBuffer.WriteString(fmt.Sprintf("%#v", result.name))
+			} else {
+				outputBuffer.WriteString(result.name)
+			}
 			if e.inodes {
 				outputBuffer.WriteString(" 0x" + strconv.FormatUint(result.ino, 16))
 			}
@@ -447,6 +452,7 @@ type Options struct {
 	Resilient     bool `long:"resilient" description:"DEPRECATED and ignored, resilient is a default, use --stop-on-error if it is undesired behaviour"`
 	StopOnError   bool `long:"stop-on-error" description:"Aborts scan on any error"`
 	Inodes        bool `long:"inodes" description:"Output inodes along with filenames"`
+	Raw           bool `long:"raw" description:"Output filenames as escaped strings"`
 	Threads       int  `short:"j" long:"jobs" description:"Number of jobs(threads)" default:"128"`
 	WithSizes     bool `long:"with-size" description:"Output file sizes along with filenames"`
 	ResultThreads int  `long:"result-jobs" description:"Number of jobs for processing results, like doing stats to get file sizes" default:"128"`
@@ -497,6 +503,7 @@ func main() {
 	explorer.SetIncludedTypes(opts.Type)
 	explorer.SetThreads(opts.Threads)
 	explorer.inodes = opts.Inodes
+	explorer.raw = opts.Raw
 	explorer.timeout = opts.Timeout
 	explorer.resultsThreads = opts.ResultThreads
 	explorer.withSizes = opts.WithSizes
