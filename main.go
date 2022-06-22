@@ -66,6 +66,7 @@ type Explorer struct {
 	inFlight            int64
 	resilient           bool
 	inodes              bool
+	inodesHex           bool
 	timeout             time.Duration
 	doneTails           controlChannel
 	doneDirectories     controlChannel
@@ -161,6 +162,9 @@ func (e *Explorer) dumpResults() {
 			outputBuffer.WriteString(result.name)
 			if e.inodes {
 				outputBuffer.WriteString(" " + strconv.FormatUint(result.ino, 10))
+			}
+			if e.inodesHex {
+				outputBuffer.WriteString(" 0x" + strconv.FormatUint(result.ino, 16))
 			}
 			// TODO: Once adding another stat-based processor,
 			// 		 put this into interface for processing and put on outer level
@@ -446,7 +450,8 @@ func (e *Explorer) readdir(dir string) {
 type Options struct {
 	Resilient     bool `long:"resilient" description:"DEPRECATED and ignored, resilient is a default, use --stop-on-error if it is undesired behaviour"`
 	StopOnError   bool `long:"stop-on-error" description:"Aborts scan on any error"`
-	Inodes        bool `long:"inodes" description:"Output inodes along with filenames"`
+	Inodes        bool `long:"inodes" description:"Output inodes (decimal) along with filenames"`
+	InodesHex     bool `long:"inodes-hex" description:"Output inodes (hexadecimal) along with filenames"`
 	Threads       int  `short:"j" long:"jobs" description:"Number of jobs(threads)" default:"128"`
 	WithSizes     bool `long:"with-size" description:"Output file sizes along with filenames"`
 	ResultThreads int  `long:"result-jobs" description:"Number of jobs for processing results, like doing stats to get file sizes" default:"128"`
@@ -497,6 +502,7 @@ func main() {
 	explorer.SetIncludedTypes(opts.Type)
 	explorer.SetThreads(opts.Threads)
 	explorer.inodes = opts.Inodes
+	explorer.inodesHex = opts.InodesHex
 	explorer.timeout = opts.Timeout
 	explorer.resultsThreads = opts.ResultThreads
 	explorer.withSizes = opts.WithSizes
