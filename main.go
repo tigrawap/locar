@@ -160,7 +160,7 @@ func (e *Explorer) dumpResults() {
 			done++
 			outputBuffer.WriteString(result.name)
 			if e.inodes {
-				outputBuffer.WriteString(" " + strconv.FormatUint(result.ino, 10))
+				outputBuffer.WriteString(" 0x" + strconv.FormatUint(result.ino, 16))
 			}
 			// TODO: Once adding another stat-based processor,
 			// 		 put this into interface for processing and put on outer level
