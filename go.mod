@@ -8,4 +8,4 @@ require (
 	golang.org/x/sync v0.3.0
 )
 
-require golang.org/x/sys v0.0.0-20210320140829-1e4c9ba3b0c4 // indirect
+require golang.org/x/sys v0.1.0 // indirect
