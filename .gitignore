@@ -1,6 +1,7 @@
 .idea
 .DS_Store
 bin
+locar
 
 # Envflow user entrypoints (contain local paths/secrets)
 envflow.*.sh
