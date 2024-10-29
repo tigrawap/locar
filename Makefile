@@ -4,6 +4,7 @@ PKGPATH=$(BUILDPATH)/pkg
 
 GO=$(shell which go)
 GOGET=$(GO) get
+VERSION ?= 0.4.0
 
 PLATFORMS := darwin/amd64 linux/amd64 freebsd/amd64 darwin/arm64 linux/arm64
 PLATFORM = $(subst /, ,$@)
@@ -54,7 +55,7 @@ default: prepare build
 $(PLATFORMS):
 	@echo -n "build $(OS)/$(ARCH)... "
 	$(eval EXT := $(shell if [ "$(OS)" = "windows" ]; then echo .exe; fi))
-	@GOOS=$(OS) GOARCH=$(ARCH) $(GOBUILD) -o $(BINPATH)/$(EXENAME)_$(OS)_$(ARCH)$(EXT) $(CMDSOURCES)
+	@GOOS=$(OS) GOARCH=$(ARCH) $(GOBUILD) -a -o $(BINPATH)/$(EXENAME)_$(OS)_$(ARCH)$(EXT) -ldflags '-X main.Version=v'$(VERSION)' -extldflags "-static"' $(CMDSOURCES)
 	@echo ok
 
 all: default $(PLATFORMS)
