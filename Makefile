@@ -5,7 +5,7 @@ PKGPATH=$(BUILDPATH)/pkg
 GO=$(shell which go)
 GOGET=$(GO) get
 
-PLATFORMS := darwin/amd64 linux/amd64 freebsd/amd64
+PLATFORMS := darwin/amd64 linux/amd64 freebsd/amd64 darwin/arm64 linux/arm64
 PLATFORM = $(subst /, ,$@)
 OS = $(word 1, $(PLATFORM))
 ARCH = $(word 2, $(PLATFORM))
