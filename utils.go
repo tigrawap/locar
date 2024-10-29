@@ -45,7 +45,7 @@ func ExpandHomePath(path string) string {
 }
 
 func quitOnInterrupt() chan bool {
-	c := make(chan os.Signal)
+	c := make(chan os.Signal, 2)
 	quit := make(chan bool)
 	signal.Notify(c, os.Interrupt)
 	signal.Notify(c, syscall.SIGTERM)
