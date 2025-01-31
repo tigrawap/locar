@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"golang.org/x/sync/semaphore"
 	"log"
 	"os"
 	"path"
@@ -16,6 +15,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"golang.org/x/sync/semaphore"
 
 	"github.com/gobwas/glob"
 	"github.com/jessevdk/go-flags"
@@ -57,8 +58,17 @@ type resultStore struct {
 }
 
 type Result struct {
-	name string
-	ino  uint64
+	name  string
+	ino   uint64
+	atime time.Time
+	mtime time.Time
+	ctime time.Time
+}
+
+// TimeCondition represents conditions to filter by a specific time type
+type TimeCondition struct {
+	OlderThan time.Duration
+	NewerThan time.Duration
 }
 
 type Explorer struct {
@@ -84,13 +94,24 @@ type Explorer struct {
 	resultsPool         sync.Pool
 	debugInFlight       int64
 
+	atimeOlderThan time.Duration
+	atimeNewerThan time.Duration
+	mtimeOlderThan time.Duration
+	mtimeNewerThan time.Duration
+	ctimeOlderThan time.Duration
+	ctimeNewerThan time.Duration
+
+	delete         bool
+	deleteAll      bool
 	includeDirs    bool
 	includeFiles   bool
 	includeLinks   bool
+	includeSocket  bool
 	includeAny     bool
 	started        bool
 	resultsThreads int
 	withSizes      bool
+	withTimes      bool
 }
 
 func NewExplorer(ctx context.Context) *Explorer {
@@ -106,7 +127,6 @@ func NewExplorer(ctx context.Context) *Explorer {
 	}
 	return e
 }
-
 func (e *Explorer) SetIncludedTypes(types []string) {
 	for _, t := range types {
 		switch t {
@@ -116,6 +136,8 @@ func (e *Explorer) SetIncludedTypes(types []string) {
 			e.includeDirs = true
 		case "link":
 			e.includeLinks = true
+		case "socket":
+			e.includeSocket = true
 		case "all":
 			e.includeAny = true
 		}
@@ -138,6 +160,109 @@ func (e *Explorer) SetThreads(threads int) {
 	//		log.Println(e.debugInFlight)
 	//	}
 	//}()
+}
+
+// checkTimeCondition checks if a given timestamp meets the specified TimeCondition
+func checkTimeCondition(timestamp time.Time, condition TimeCondition) bool {
+	now := time.Now()
+
+	// Check "older than" condition
+	if condition.OlderThan != 0 {
+		targetTime := now.Add(-condition.OlderThan)
+		if timestamp.After(targetTime) {
+			return false
+		}
+	}
+
+	// Check "newer than" condition
+	if condition.NewerThan != 0 {
+		targetTime := now.Add(-condition.NewerThan)
+		if timestamp.Before(targetTime) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// checkFileTimeConditions retrieves file times and checks them against the given conditions
+func (e *Explorer) checkFileTimeConditions(fullpath string) (Result, bool, error) {
+	// Retrieve atime, ctime, and mtime of the file
+	atime, mtime, ctime, err := GetFileTimes(fullpath)
+	if err != nil {
+		log.Println(err)
+		return Result{}, false, err
+	}
+
+	// Create time conditions based on the Explorer's settings
+	atimeCond := createTimeConditions(&e.atimeOlderThan, &e.atimeNewerThan)
+	ctimeCond := createTimeConditions(&e.ctimeOlderThan, &e.ctimeNewerThan)
+	mtimeCond := createTimeConditions(&e.mtimeOlderThan, &e.mtimeNewerThan)
+
+	if !checkTimeCondition(atime, atimeCond) {
+		return Result{}, false, nil
+	}
+	if !checkTimeCondition(ctime, ctimeCond) {
+		return Result{}, false, nil
+	}
+	if !checkTimeCondition(mtime, mtimeCond) {
+		return Result{}, false, nil
+	}
+
+	// All conditions passed
+	return Result{
+		name:  fullpath,
+		atime: atime,
+		mtime: mtime,
+		ctime: ctime,
+	}, true, nil
+}
+
+// createTimeConditions creates and returns the TimeCondition structs for time
+func createTimeConditions(olderThanInput, newerThanInput *time.Duration) (timeCond TimeCondition) {
+	// Define default durations
+	defaultOlderThan := 0 * time.Second
+	defaultNewerThan := 0 * time.Second
+
+	// Use input if provided, otherwise use default values
+	timeOlderThan := defaultOlderThan
+	timeNewerThan := defaultNewerThan
+
+	if olderThanInput != nil {
+		timeOlderThan = *olderThanInput
+	}
+	if newerThanInput != nil {
+		timeNewerThan = *newerThanInput
+	}
+
+	timeCond = TimeCondition{
+		OlderThan: timeOlderThan,
+		NewerThan: timeNewerThan,
+	}
+
+	return timeCond
+}
+
+// GetFileTimes returns the atime, mtime, and ctime of a file
+func GetFileTimes(path string) (atime, mtime, ctime time.Time, err error) {
+
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}, time.Time{}, time.Time{}, err
+	}
+
+	stat := fileInfo.Sys().(*syscall.Stat_t)
+
+	// Extract access time (atime)
+	atime = time.Unix(stat.Atim.Sec, stat.Atim.Nsec)
+
+	// Extract modification time (mtime)
+	mtime = time.Unix(stat.Mtim.Sec, stat.Mtim.Nsec)
+
+	// Extract change time (ctime)
+	ctime = time.Unix(stat.Ctim.Sec, stat.Ctim.Nsec)
+
+	return atime, mtime, ctime, nil
 }
 
 func (e *Explorer) dumpResults() {
@@ -185,7 +310,34 @@ func (e *Explorer) dumpResults() {
 					outputBuffer.WriteString(fmt.Sprintf(" %d", fileStat.Size()))
 				}
 			}
-			// ^ Extract
+			// Show atime, mtime, ctime
+			if e.withTimes {
+				outputBuffer.WriteString(fmt.Sprintf(" %d %d %d", result.atime.Unix(), result.mtime.Unix(), result.ctime.Unix()))
+			}
+
+			// Delete ignore non empty dir
+			if e.delete {
+				err := os.Remove(result.name)
+				if err != nil {
+					log.Printf("Delete failed: %s - Error: %v\n", result.name, err)
+					outputBuffer.WriteString(" [delete_failed]")
+				} else {
+					log.Printf("Delete success: %s\n", result.name)
+					outputBuffer.WriteString(" [delete_success]")
+				}
+			}
+
+			// Delete not ignore non empty dir
+			if e.deleteAll {
+				err := os.RemoveAll(result.name)
+				if err != nil {
+					log.Printf("Delete failed: %s - Error: %v\n", result.name, err)
+					outputBuffer.WriteString(" [delete_failed]")
+				} else {
+					log.Printf("Delete success: %s\n", result.name)
+					outputBuffer.WriteString(" [delete_success]")
+				}
+			}
 			outputBuffer.WriteString("\n")
 			if outputBuffer.Len() > 4*1024 {
 				flush()
@@ -430,19 +582,68 @@ func (e *Explorer) readdir(dir string) {
 			switch dirent.Type {
 			case syscall.DT_DIR:
 				if e.includeDirs || e.includeAny {
-					results = append(results, Result{fullpath + string(filepath.Separator), GetIno(dirent)})
+					if e.atimeOlderThan != 0 || e.atimeNewerThan != 0 || e.ctimeOlderThan != 0 || e.ctimeNewerThan != 0 || e.mtimeOlderThan != 0 || e.mtimeNewerThan != 0 || e.withTimes {
+						// Check times and get the Result struct
+						result, ok, err := e.checkFileTimeConditions(fullpath)
+						if err != nil || !ok {
+							continue
+						}
+						results = append(results, result)
+					} else {
+						results = append(results, Result{fullpath + string(filepath.Separator), GetIno(dirent), time.Time{}, time.Time{}, time.Time{}})
+					}
 				}
 			case syscall.DT_REG:
 				if e.includeFiles || e.includeAny {
-					results = append(results, Result{fullpath, GetIno(dirent)})
+					if e.atimeOlderThan != 0 || e.atimeNewerThan != 0 || e.ctimeOlderThan != 0 || e.ctimeNewerThan != 0 || e.mtimeOlderThan != 0 || e.mtimeNewerThan != 0 || e.withTimes {
+						// Check times and get the Result struct
+						result, ok, err := e.checkFileTimeConditions(fullpath)
+						if err != nil || !ok {
+							continue
+						}
+						results = append(results, result)
+					} else {
+						results = append(results, Result{fullpath, GetIno(dirent), time.Time{}, time.Time{}, time.Time{}})
+					}
 				}
 			case syscall.DT_LNK:
 				if e.includeLinks || e.includeAny {
-					results = append(results, Result{fullpath, GetIno(dirent)})
+					if e.atimeOlderThan != 0 || e.atimeNewerThan != 0 || e.ctimeOlderThan != 0 || e.ctimeNewerThan != 0 || e.mtimeOlderThan != 0 || e.mtimeNewerThan != 0 || e.withTimes {
+						// Check times and get the Result struct
+						result, ok, err := e.checkFileTimeConditions(fullpath)
+						if err != nil || !ok {
+							continue
+						}
+						results = append(results, result)
+					} else {
+						results = append(results, Result{fullpath, GetIno(dirent), time.Time{}, time.Time{}, time.Time{}})
+					}
+				}
+			case syscall.DT_SOCK:
+				if e.includeSocket || e.includeAny {
+					if e.atimeOlderThan != 0 || e.atimeNewerThan != 0 || e.ctimeOlderThan != 0 || e.ctimeNewerThan != 0 || e.mtimeOlderThan != 0 || e.mtimeNewerThan != 0 || e.withTimes {
+						// Check times and get the Result struct
+						result, ok, err := e.checkFileTimeConditions(fullpath)
+						if err != nil || !ok {
+							continue
+						}
+						results = append(results, result)
+					} else {
+						results = append(results, Result{fullpath, GetIno(dirent), time.Time{}, time.Time{}, time.Time{}})
+					}
 				}
 			default:
 				if e.includeAny {
-					results = append(results, Result{fullpath, GetIno(dirent)})
+					if e.atimeOlderThan != 0 || e.atimeNewerThan != 0 || e.ctimeOlderThan != 0 || e.ctimeNewerThan != 0 || e.mtimeOlderThan != 0 || e.mtimeNewerThan != 0 || e.withTimes {
+						// Check times and get the Result struct
+						result, ok, err := e.checkFileTimeConditions(fullpath)
+						if err != nil || !ok {
+							continue
+						}
+						results = append(results, result)
+					} else {
+						results = append(results, Result{fullpath, GetIno(dirent), time.Time{}, time.Time{}, time.Time{}})
+					}
 				} else {
 					log.Printf("Skipped record: %s iNode<%d>[type:%s]\n", fullpath, GetIno(dirent), entryType(dirent.Type))
 				}
@@ -455,20 +656,29 @@ func (e *Explorer) readdir(dir string) {
 }
 
 type Options struct {
-	Resilient     bool `long:"resilient" description:"DEPRECATED and ignored, resilient is a default, use --stop-on-error if it is undesired behaviour"`
-	StopOnError   bool `long:"stop-on-error" description:"Aborts scan on any error"`
-	Inodes        bool `long:"inodes" description:"Output inodes (decimal) along with filenames"`
-	InodesHex     bool `long:"inodes-hex" description:"Output inodes (hexadecimal) along with filenames"`
-	Raw           bool `long:"raw" description:"Output filenames as escaped strings"`
-	Threads       int  `short:"j" long:"jobs" description:"Number of jobs(threads)" default:"128"`
-	WithSizes     bool `long:"with-size" description:"Output file sizes along with filenames"`
-	ResultThreads int  `long:"result-jobs" description:"Number of jobs for processing results, like doing stats to get file sizes" default:"128"`
-	Version       bool `short:"v" long:"version" description:"Show version"`
+	Resilient      bool          `long:"resilient" description:"DEPRECATED and ignored, resilient is a default, use --stop-on-error if it is undesired behaviour"`
+	StopOnError    bool          `long:"stop-on-error" description:"Aborts scan on any error"`
+	Inodes         bool          `long:"inodes" description:"Output inodes (decimal) along with filenames"`
+	InodesHex      bool          `long:"inodes-hex" description:"Output inodes (hexadecimal) along with filenames"`
+	Raw            bool          `long:"raw" description:"Output filenames as escaped strings"`
+	Threads        int           `short:"j" long:"jobs" description:"Number of jobs(threads)" default:"128"`
+	WithSizes      bool          `long:"with-size" description:"Output file sizes along with filenames"`
+	WithTimes      bool          `long:"with-times" description:"Output file with atime, mtime, ctime along with filenames"`
+	AtimeOlderThan time.Duration `long:"atime-older" description:"Filter files by access time older than this duration (e.g., 24h5m25s)" default:"0s"`
+	AtimeNewerThan time.Duration `long:"atime-newer" description:"Filter files by access time newer than this duration (e.g., 24h5m25s)" default:"0s"`
+	MtimeOlderThan time.Duration `long:"mtime-older" description:"Filter files by modification time older than this duration (e.g., 24h5m25s)" default:"0s"`
+	MtimeNewerThan time.Duration `long:"mtime-newer" description:"Filter files by modification time newer than this duration (e.g., 24h5m25s)" default:"0s"`
+	CtimeOlderThan time.Duration `long:"ctime-older" description:"Filter files by change time older than this duration (e.g., 24h5m25s)" default:"0s"`
+	CtimeNewerThan time.Duration `long:"ctime-newer" description:"Filter files by change time newer than this duration (e.g., 24h5m25s)" default:"0s"`
+	ResultThreads  int           `long:"result-jobs" description:"Number of jobs for processing results, like doing stats to get file sizes" default:"128"`
+	Delete         bool          `long:"delete" description:"Delete found files. Non empty directories will be ignored"`
+	DeleteAll      bool          `long:"delete-all" description:"Delete found files. Non empty directories will be removed with ALL their contents!!!"`
+	Version        bool          `short:"v" long:"version" description:"Show version"`
 
 	Exclude []string `short:"x" long:"exclude" description:"Patterns to exclude. Can be specified multiple times"`
 	Filter  []string `short:"f" long:"filter" description:"Patterns to filter by. Can be specified multiple times"`
 
-	Type []string `short:"t" long:"type" default:"file" default:"dir" default:"link" description:"Search entries of specific type \nPossible values: file, dir, link, all. Can be specified multiple times"`
+	Type []string `short:"t" long:"type" default:"file" default:"dir" default:"link" default:"socket" description:"Search entries of specific type \nPossible values: file, dir, link, socket, all. Can be specified multiple times"`
 
 	Args struct {
 		Directories []string `positional-arg-name:"directories" description:"Directories to search, using current directory if missing"`
@@ -519,6 +729,15 @@ func main() {
 	explorer.timeout = opts.Timeout
 	explorer.resultsThreads = opts.ResultThreads
 	explorer.withSizes = opts.WithSizes
+	explorer.withTimes = opts.WithTimes
+	explorer.atimeOlderThan = opts.AtimeOlderThan
+	explorer.atimeNewerThan = opts.AtimeNewerThan
+	explorer.mtimeOlderThan = opts.MtimeOlderThan
+	explorer.mtimeNewerThan = opts.MtimeNewerThan
+	explorer.ctimeOlderThan = opts.CtimeOlderThan
+	explorer.ctimeNewerThan = opts.CtimeNewerThan
+	explorer.delete = opts.Delete
+	explorer.deleteAll = opts.DeleteAll
 
 	for _, exclude := range opts.Exclude {
 		explorer.excludes = append(explorer.excludes, glob.MustCompile(exclude))
@@ -591,6 +810,8 @@ func entryType(direntType uint8) string {
 		return "file"
 	case syscall.DT_LNK:
 		return "link"
+	case syscall.DT_SOCK:
+		return "socket"
 	case syscall.DT_CHR:
 		return "char"
 	default:

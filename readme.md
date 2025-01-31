@@ -20,6 +20,28 @@ user 1m7.076s
 sys 0m39.272s
 ```
 
+
+Find Files Newer than 72h Using `find`
+```
+>> time find /scratch/img -type f -ctime -3 -mtime -3 -atime -3 | wc -l
+495702
+
+real	2m56.041s
+user	0m1.390s
+sys	0m8.526s
+```
+
+Find Files Newer than 72h Using `locar`
+
+```
+>> time ./locar -t file --atime-newer=72h --mtime-newer=72h --ctime-newer=72h /scratch/img | wc -l
+495702
+
+real	0m14.686s
+user	0m2.349s
+sys	0m4.508s
+```
+
 I.e ~almost X35 speedup
 
 
@@ -31,21 +53,33 @@ Usage:
   locar [OPTIONS] [directories...]
 
 Application Options:
-      --resilient    Do not stop on errors, instead print to stderr
-      --inodes       Output inodes along with filenames
-  -j, --jobs=        Number of jobs(threads) (default: 128)
-      --with-size    Output file sizes along with filenames
-      --result-jobs= Number of jobs for processing results, like doing stats to get file sizes (default: 128)
-  -x, --exclude=     Patterns to exclude. Can be specified multiple times
-  -f, --filter=      Patterns to filter by. Can be specified multiple times
-  -t, --type=        Search entries of specific type
-                     Possible values: file, dir, link, all. Can be specified multiple times (default: file, dir, link)
-      --timeout=     Timeout for readdir operations. Error will be reported, but os thread will be kept hanging (default: 5m)
-
+      --resilient      DEPRECATED and ignored, resilient is a default, use --stop-on-error if it is undesired behaviour
+      --stop-on-error  Aborts scan on any error
+      --inodes         Output inodes (decimal) along with filenames
+      --inodes-hex     Output inodes (hexadecimal) along with filenames
+      --raw            Output filenames as escaped strings
+  -j, --jobs=          Number of jobs(threads) (default: 128)
+      --with-size      Output file sizes along with filenames
+      --with-times     Output file with atime, mtime, ctime along with filenames
+      --atime-older=   Filter files by access time older than this duration (e.g., 24h5m25s) (default: 0s)
+      --atime-newer=   Filter files by access time newer than this duration (e.g., 24h5m25s) (default: 0s)
+      --mtime-older=   Filter files by modification time older than this duration (e.g., 24h5m25s) (default: 0s)
+      --mtime-newer=   Filter files by modification time newer than this duration (e.g., 24h5m25s) (default: 0s)
+      --ctime-older=   Filter files by change time older than this duration (e.g., 24h5m25s) (default: 0s)
+      --ctime-newer=   Filter files by change time newer than this duration (e.g., 24h5m25s) (default: 0s)
+      --result-jobs=   Number of jobs for processing results, like doing stats to get file sizes (default: 128)
+      --delete         Delete found files. Non empty directories will be ignored
+      --delete-all     Delete found files. Non empty directories will be removed with ALL their contents!!!
+  -v, --version        Show version
+  -x, --exclude=       Patterns to exclude. Can be specified multiple times
+  -f, --filter=        Patterns to filter by. Can be specified multiple times
+  -t, --type=          Search entries of specific type
+                       Possible values: file, dir, link, socket, all. Can be specified multiple times (default: file, dir, link, socket)
+      --timeout=       Timeout for readdir operations. Error will be reported, but os thread will be kept hanging (default: 5m)
 
 Help Options:
-  -h, --help         Show this help message
+  -h, --help           Show this help message
 
 Arguments:
-  directories:       Directories to search, using current directory if missing
+  directories:         Directories to search, using current directory if missing
 ```
