@@ -103,6 +103,7 @@ type Explorer struct {
 
 	delete         bool
 	deleteAll      bool
+	quiet          bool
 	includeDirs    bool
 	includeFiles   bool
 	includeLinks   bool
@@ -275,72 +276,107 @@ func (e *Explorer) dumpResults() {
 	var writeLock sync.Mutex
 	resultsWorkers := semaphore.NewWeighted(int64(e.resultsThreads))
 
+	// Parallel delete infrastructure
+	var deleteWg sync.WaitGroup
+	var deleteSem chan null
+	var activeDeletes int64
+	var totalDeleted int64
+	var totalDeleteFailed int64
+	if e.delete || e.deleteAll {
+		deleteSem = make(chan null, e.threads)
+		// Periodic stats logger
+		go func() {
+			for {
+				time.Sleep(1 * time.Second)
+				ad := atomic.LoadInt64(&activeDeletes)
+				td := atomic.LoadInt64(&totalDeleted)
+				tf := atomic.LoadInt64(&totalDeleteFailed)
+				readdirs := atomic.LoadInt64(&e.debugInFlight)
+				d := atomic.LoadInt64(&done)
+				log.Printf("[stats] found: %d, active readdirs: %d, active deletes: %d, deleted: %d, failed: %d\n",
+					d, readdirs, ad, td, tf)
+				if e.doneDirectoriesFlag && ad == 0 {
+					return
+				}
+			}
+		}()
+	}
+
 	flush := func() {
-		fmt.Print(outputBuffer.String())
+		if !e.quiet {
+			fmt.Print(outputBuffer.String())
+		}
 		outputBuffer.Truncate(0)
 	}
 	defer flush()
 	defer writeSliceLock.Wait()
+	if e.delete || e.deleteAll {
+		defer deleteWg.Wait()
+	}
 	ctx := context.TODO()
+
+	doDelete := func(name string) {
+		deleteSem <- nullv
+		atomic.AddInt64(&activeDeletes, 1)
+		var err error
+		if e.deleteAll {
+			err = os.RemoveAll(name)
+		} else {
+			err = os.Remove(name)
+		}
+		if err != nil {
+			atomic.AddInt64(&totalDeleteFailed, 1)
+			log.Printf("Delete failed: %s - Error: %v\n", name, err)
+		} else {
+			atomic.AddInt64(&totalDeleted, 1)
+		}
+		atomic.AddInt64(&activeDeletes, -1)
+		<-deleteSem
+		deleteWg.Done()
+	}
 
 	writeData := func(data []Result) {
 		writeLock.Lock()
 		for _, result = range data {
-			done++
-			if e.raw {
-				outputBuffer.WriteString(fmt.Sprintf("%#v", result.name))
-			} else {
-				outputBuffer.WriteString(result.name)
-			}
-			if e.inodes {
-				outputBuffer.WriteString(" " + strconv.FormatUint(result.ino, 10))
-			}
-			if e.inodesHex {
-				outputBuffer.WriteString(" 0x" + strconv.FormatUint(result.ino, 16))
-			}
-			// TODO: Once adding another stat-based processor,
-			// 		 put this into interface for processing and put on outer level
-			//		 But need to make sure not to increase Result struct and do it on the fly
-			if e.withSizes {
-				fileStat, err := os.Lstat(result.name)
-				if err != nil {
-					log.Println(err)
-					outputBuffer.WriteString("0")
+			atomic.AddInt64(&done, 1)
+			if !e.quiet {
+				if e.raw {
+					outputBuffer.WriteString(fmt.Sprintf("%#v", result.name))
 				} else {
-					outputBuffer.WriteString(fmt.Sprintf(" %d", fileStat.Size()))
+					outputBuffer.WriteString(result.name)
 				}
-			}
-			// Show atime, mtime, ctime
-			if e.withTimes {
-				outputBuffer.WriteString(fmt.Sprintf(" %d %d %d", result.atime.Unix(), result.mtime.Unix(), result.ctime.Unix()))
-			}
-
-			// Delete ignore non empty dir
-			if e.delete {
-				err := os.Remove(result.name)
-				if err != nil {
-					log.Printf("Delete failed: %s - Error: %v\n", result.name, err)
-					outputBuffer.WriteString(" [delete_failed]")
-				} else {
-					log.Printf("Delete success: %s\n", result.name)
-					outputBuffer.WriteString(" [delete_success]")
+				if e.inodes {
+					outputBuffer.WriteString(" " + strconv.FormatUint(result.ino, 10))
+				}
+				if e.inodesHex {
+					outputBuffer.WriteString(" 0x" + strconv.FormatUint(result.ino, 16))
+				}
+				// TODO: Once adding another stat-based processor,
+				// 		 put this into interface for processing and put on outer level
+				//		 But need to make sure not to increase Result struct and do it on the fly
+				if e.withSizes {
+					fileStat, err := os.Lstat(result.name)
+					if err != nil {
+						log.Println(err)
+						outputBuffer.WriteString("0")
+					} else {
+						outputBuffer.WriteString(fmt.Sprintf(" %d", fileStat.Size()))
+					}
+				}
+				// Show atime, mtime, ctime
+				if e.withTimes {
+					outputBuffer.WriteString(fmt.Sprintf(" %d %d %d", result.atime.Unix(), result.mtime.Unix(), result.ctime.Unix()))
+				}
+				outputBuffer.WriteString("\n")
+				if outputBuffer.Len() > 4*1024 {
+					flush()
 				}
 			}
 
-			// Delete not ignore non empty dir
-			if e.deleteAll {
-				err := os.RemoveAll(result.name)
-				if err != nil {
-					log.Printf("Delete failed: %s - Error: %v\n", result.name, err)
-					outputBuffer.WriteString(" [delete_failed]")
-				} else {
-					log.Printf("Delete success: %s\n", result.name)
-					outputBuffer.WriteString(" [delete_success]")
-				}
-			}
-			outputBuffer.WriteString("\n")
-			if outputBuffer.Len() > 4*1024 {
-				flush()
+			// Fire off deletes in parallel, outside the write lock
+			if e.delete || e.deleteAll {
+				deleteWg.Add(1)
+				go doDelete(result.name)
 			}
 		}
 		writeLock.Unlock()
@@ -444,7 +480,9 @@ func (e *Explorer) start() {
 		for directory := range e.directories {
 			e.rateLimiter <- nullv
 			go func(dir string) {
+				atomic.AddInt64(&e.debugInFlight, 1)
 				e.readdir(dir)
+				atomic.AddInt64(&e.debugInFlight, -1)
 				<-e.rateLimiter
 				current := atomic.AddInt64(&e.inFlight, -1)
 				if current == 0 {
@@ -673,6 +711,7 @@ type Options struct {
 	ResultThreads  int           `long:"result-jobs" description:"Number of jobs for processing results, like doing stats to get file sizes" default:"128"`
 	Delete         bool          `long:"delete" description:"Delete found files. Non empty directories will be ignored"`
 	DeleteAll      bool          `long:"delete-all" description:"Delete found files. Non empty directories will be removed with ALL their contents!!!"`
+	Quiet          bool          `short:"q" long:"quiet" description:"Suppress per-file output, only show stats"`
 	Version        bool          `short:"v" long:"version" description:"Show version"`
 
 	Exclude []string `short:"x" long:"exclude" description:"Patterns to exclude. Can be specified multiple times"`
@@ -738,6 +777,7 @@ func main() {
 	explorer.ctimeNewerThan = opts.CtimeNewerThan
 	explorer.delete = opts.Delete
 	explorer.deleteAll = opts.DeleteAll
+	explorer.quiet = opts.Quiet
 
 	for _, exclude := range opts.Exclude {
 		explorer.excludes = append(explorer.excludes, glob.MustCompile(exclude))
