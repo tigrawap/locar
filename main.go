@@ -283,7 +283,7 @@ func (e *Explorer) dumpResults() {
 	var totalDeleted int64
 	var totalDeleteFailed int64
 	if e.delete || e.deleteAll {
-		deleteSem = make(chan null, e.threads)
+		deleteSem = make(chan null, e.resultsThreads)
 		// Periodic stats logger
 		go func() {
 			for {
