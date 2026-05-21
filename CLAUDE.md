@@ -6,6 +6,7 @@
   via Task tool and minimize direct tool use
   Direct tool use is acceptable only for 1-2 quick checks to
   orient.
+ Model should always be set explicitly on tasks/subagents
 
   ## Delegation model (in order):
   1. **Haiku task** — all codebase exploration, investigation,
