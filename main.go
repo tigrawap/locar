@@ -94,6 +94,13 @@ type Explorer struct {
 	resultsPool         sync.Pool
 	debugInFlight       int64
 
+	found             int64
+	activeDeletes     int64
+	totalDeleted      int64
+	totalDeleteFailed int64
+	deleteBatches     chan []string
+	deletesDone       controlChannel
+
 	atimeOlderThan time.Duration
 	atimeNewerThan time.Duration
 	mtimeOlderThan time.Duration
@@ -268,39 +275,12 @@ func GetFileTimes(path string) (atime, mtime, ctime time.Time, err error) {
 
 func (e *Explorer) dumpResults() {
 	defer func() { e.doneTails <- nullv }()
-	var done int64
 	var outputBuffer bytes.Buffer
 	var result Result
 
 	var writeSliceLock sync.WaitGroup
 	var writeLock sync.Mutex
 	resultsWorkers := semaphore.NewWeighted(int64(e.resultsThreads))
-
-	// Parallel delete infrastructure
-	var deleteWg sync.WaitGroup
-	var deleteSem chan null
-	var activeDeletes int64
-	var totalDeleted int64
-	var totalDeleteFailed int64
-	if e.delete || e.deleteAll {
-		deleteSem = make(chan null, e.resultsThreads)
-		// Periodic stats logger
-		go func() {
-			for {
-				time.Sleep(1 * time.Second)
-				ad := atomic.LoadInt64(&activeDeletes)
-				td := atomic.LoadInt64(&totalDeleted)
-				tf := atomic.LoadInt64(&totalDeleteFailed)
-				readdirs := atomic.LoadInt64(&e.debugInFlight)
-				d := atomic.LoadInt64(&done)
-				log.Printf("[stats] found: %d, active readdirs: %d, active deletes: %d, deleted: %d, failed: %d\n",
-					d, readdirs, ad, td, tf)
-				if e.doneDirectoriesFlag && ad == 0 {
-					return
-				}
-			}
-		}()
-	}
 
 	flush := func() {
 		if !e.quiet {
@@ -310,35 +290,12 @@ func (e *Explorer) dumpResults() {
 	}
 	defer flush()
 	defer writeSliceLock.Wait()
-	if e.delete || e.deleteAll {
-		defer deleteWg.Wait()
-	}
 	ctx := context.TODO()
-
-	doDelete := func(name string) {
-		deleteSem <- nullv
-		atomic.AddInt64(&activeDeletes, 1)
-		var err error
-		if e.deleteAll {
-			err = os.RemoveAll(name)
-		} else {
-			err = os.Remove(name)
-		}
-		if err != nil {
-			atomic.AddInt64(&totalDeleteFailed, 1)
-			log.Printf("Delete failed: %s - Error: %v\n", name, err)
-		} else {
-			atomic.AddInt64(&totalDeleted, 1)
-		}
-		atomic.AddInt64(&activeDeletes, -1)
-		<-deleteSem
-		deleteWg.Done()
-	}
 
 	writeData := func(data []Result) {
 		writeLock.Lock()
 		for _, result = range data {
-			atomic.AddInt64(&done, 1)
+			atomic.AddInt64(&e.found, 1)
 			if !e.quiet {
 				if e.raw {
 					outputBuffer.WriteString(fmt.Sprintf("%#v", result.name))
@@ -372,12 +329,6 @@ func (e *Explorer) dumpResults() {
 					flush()
 				}
 			}
-
-			// Fire off deletes in parallel, outside the write lock
-			if e.delete || e.deleteAll {
-				deleteWg.Add(1)
-				go doDelete(result.name)
-			}
 		}
 		writeLock.Unlock()
 		writeSliceLock.Done()
@@ -409,6 +360,69 @@ func (e *Explorer) dumpResults() {
 			}
 		}
 	}
+}
+
+// runDeleteWorkers consumes per-directory batches and deletes their entries.
+// Each worker takes one batch (the entries of a single directory) at a time and
+// deletes them sequentially, so at most one delete is in flight per directory.
+// Directories larger than the readdir batch size are split across batches and
+// may briefly see one delete per in-flight batch. Worker count is --result-jobs.
+//
+// The workers depend only on deleteBatches being fed and eventually closed;
+// they never wait on the traversal, so traversal backpressure on a full
+// deleteBatches channel cannot deadlock. deleteBatches is closed by done()
+// after doneDirectories, by which point every readdir goroutine has returned
+// and no further send is possible.
+func (e *Explorer) runDeleteWorkers(workers int) {
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for batch := range e.deleteBatches {
+				for _, name := range batch {
+					atomic.AddInt64(&e.activeDeletes, 1)
+					var err error
+					if e.deleteAll {
+						err = os.RemoveAll(name)
+					} else {
+						err = os.Remove(name)
+					}
+					if err != nil {
+						atomic.AddInt64(&e.totalDeleteFailed, 1)
+						log.Printf("Delete failed: %s - Error: %v\n", name, err)
+					} else {
+						atomic.AddInt64(&e.totalDeleted, 1)
+					}
+					atomic.AddInt64(&e.activeDeletes, -1)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	e.printStats()
+	close(e.deletesDone)
+}
+
+// deleteStatsLoop prints periodic progress until all deletes are done.
+func (e *Explorer) deleteStatsLoop() {
+	for {
+		select {
+		case <-e.deletesDone:
+			return
+		case <-time.After(1 * time.Second):
+			e.printStats()
+		}
+	}
+}
+
+func (e *Explorer) printStats() {
+	log.Printf("[stats] found: %d, active readdirs: %d, active deletes: %d, deleted: %d, failed: %d\n",
+		atomic.LoadInt64(&e.found),
+		atomic.LoadInt64(&e.debugInFlight),
+		atomic.LoadInt64(&e.activeDeletes),
+		atomic.LoadInt64(&e.totalDeleted),
+		atomic.LoadInt64(&e.totalDeleteFailed))
 }
 
 func (e *Explorer) requestStoreFlush() {
@@ -473,6 +487,16 @@ func (e *Explorer) start() {
 		e.SetThreads(1)
 	}
 	e.started = true
+	if e.delete || e.deleteAll {
+		deleteWorkers := e.resultsThreads
+		if deleteWorkers < 1 {
+			deleteWorkers = 1
+		}
+		e.deleteBatches = make(chan []string, 4096)
+		e.deletesDone = make(controlChannel)
+		go e.runDeleteWorkers(deleteWorkers)
+		go e.deleteStatsLoop()
+	}
 	go e.dumpResults()
 	go e.flushStoreLoop()
 	e.rateLimiter = make(chan null, e.threads)
@@ -499,7 +523,16 @@ func (e *Explorer) done() controlChannel {
 	go func() {
 		<-e.doneDirectories
 		e.doneDirectoriesFlag = true
+		// doneDirectories is sent only after every readdir goroutine has
+		// returned, so all batches have already been sent: closing now
+		// cannot race with a send. Workers then drain and exit.
+		if e.delete || e.deleteAll {
+			close(e.deleteBatches)
+		}
 		<-e.doneTails
+		if e.delete || e.deleteAll {
+			<-e.deletesDone
+		}
 		allDone <- nullv
 	}()
 	return allDone
@@ -554,6 +587,17 @@ func (e *Explorer) readdir(dir string) {
 	clearResults := func() {
 		if len(results) != 0 {
 			e.addResults(results)
+			if e.delete || e.deleteAll {
+				// Hand this directory's entries to the delete pipeline as
+				// one batch. A worker deletes a batch sequentially, so a
+				// directory whose entries fit in a single batch sees at
+				// most one delete in flight at a time.
+				batch := make([]string, len(results))
+				for i := range results {
+					batch[i] = results[i].name
+				}
+				e.deleteBatches <- batch
+			}
 		}
 		results = results[:0]
 	}
@@ -708,7 +752,7 @@ type Options struct {
 	MtimeNewerThan time.Duration `long:"mtime-newer" description:"Filter files by modification time newer than this duration (e.g., 24h5m25s)" default:"0s"`
 	CtimeOlderThan time.Duration `long:"ctime-older" description:"Filter files by change time older than this duration (e.g., 24h5m25s)" default:"0s"`
 	CtimeNewerThan time.Duration `long:"ctime-newer" description:"Filter files by change time newer than this duration (e.g., 24h5m25s)" default:"0s"`
-	ResultThreads  int           `long:"result-jobs" description:"Number of jobs for processing results, like doing stats to get file sizes" default:"128"`
+	ResultThreads  int           `long:"result-jobs" description:"Number of jobs for processing results: file stats, and concurrent directory deletes (at most one delete in flight per directory)" default:"128"`
 	Delete         bool          `long:"delete" description:"Delete found files. Non empty directories will be ignored"`
 	DeleteAll      bool          `long:"delete-all" description:"Delete found files. Non empty directories will be removed with ALL their contents!!!"`
 	Quiet          bool          `short:"q" long:"quiet" description:"Suppress per-file output, only show stats"`
