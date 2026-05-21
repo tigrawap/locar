@@ -52,6 +52,12 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Setup Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Create release
         id: semrel
         uses: go-semantic-release/action@v1
@@ -64,5 +70,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          make dist VERSION=${{ steps.semrel.outputs.version }}
+          task dist VERSION=${{ steps.semrel.outputs.version }}
           gh release upload "${{ steps.semrel.outputs.version }}" bin/locar_* --clobber

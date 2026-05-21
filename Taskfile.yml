@@ -1,0 +1,87 @@
+version: '3'
+
+vars:
+  EXENAME: locar
+  VERSION: "0.4.0"
+  BINPATH: '{{.ROOT_DIR}}/bin'
+
+tasks:
+  default:
+    desc: Run checks and build the binary
+    cmds:
+      - task: prepare
+      - task: build
+
+  prepare:
+    desc: Run the test suite, then ensure deps and the output dir exist
+    cmds:
+      - task: test
+      - task: makedir
+      - task: deps
+
+  deps:
+    desc: Download module dependencies
+    cmds:
+      - go mod download
+
+  makedir:
+    internal: true
+    cmds:
+      - mkdir -p '{{.BINPATH}}'
+    status:
+      - test -d '{{.BINPATH}}'
+
+  build:
+    desc: Build the locar binary into bin/
+    deps: [makedir]
+    cmds:
+      - go build -o '{{.BINPATH}}/{{.EXENAME}}' .
+
+  test:
+    desc: Check formatting, run go vet and the test suite
+    cmds:
+      - |
+        unformatted=$(gofmt -l .)
+        if [ -n "$unformatted" ]; then
+          echo "gofmt needs to be run on:"
+          echo "$unformatted"
+          exit 1
+        fi
+      - go vet ./...
+      - go test ./...
+
+  cross:
+    internal: true
+    requires:
+      vars: [GOOS, GOARCH]
+    cmds:
+      - |
+        GOOS={{.GOOS}} GOARCH={{.GOARCH}} go build -a \
+          -o '{{.BINPATH}}/{{.EXENAME}}_{{.GOOS}}_{{.GOARCH}}' \
+          -ldflags '-X main.Version=v{{.VERSION}} -extldflags "-static"' .
+
+  dist:
+    desc: Cross-compile release binaries for every target platform
+    deps: [makedir]
+    cmds:
+      - task: cross
+        vars: {GOOS: darwin, GOARCH: amd64}
+      - task: cross
+        vars: {GOOS: linux, GOARCH: amd64}
+      - task: cross
+        vars: {GOOS: freebsd, GOARCH: amd64}
+      - task: cross
+        vars: {GOOS: darwin, GOARCH: arm64}
+      - task: cross
+        vars: {GOOS: linux, GOARCH: arm64}
+
+  all:
+    desc: Build locally and cross-compile every platform
+    cmds:
+      - task: default
+      - task: dist
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - rm -rf '{{.BINPATH}}'
