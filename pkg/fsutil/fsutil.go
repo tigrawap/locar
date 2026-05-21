@@ -1,14 +1,13 @@
-package main
+package fsutil
 
 import (
 	"errors"
 	"os"
-	"os/signal"
 	"os/user"
 	"path/filepath"
-	"syscall"
 )
 
+// IsDir checks whether filename is an existing directory.
 func IsDir(filename string) error {
 	fi, err := os.Stat(filename)
 	if os.IsNotExist(err) {
@@ -26,6 +25,7 @@ func IsDir(filename string) error {
 	}
 }
 
+// GetHomeDir returns the home directory of the current user.
 func GetHomeDir() string {
 	currentUser, err := user.Current()
 	var homedir string
@@ -37,24 +37,10 @@ func GetHomeDir() string {
 	return homedir
 }
 
+// ExpandHomePath expands a leading ~ to the user's home directory.
 func ExpandHomePath(path string) string {
 	if len(path) < 2 || path[:2] != "~"+string(os.PathSeparator) {
 		return path
 	}
 	return filepath.Join(GetHomeDir(), path[2:])
-}
-
-func quitOnInterrupt() chan bool {
-	c := make(chan os.Signal, 2)
-	quit := make(chan bool)
-	signal.Notify(c, os.Interrupt)
-	signal.Notify(c, syscall.SIGTERM)
-	signal.Notify(c, syscall.SIGQUIT)
-	signal.Notify(c, syscall.SIGABRT)
-	signal.Notify(c, syscall.SIGINT)
-	go func() {
-		<-c
-		quit <- true
-	}()
-	return quit
 }

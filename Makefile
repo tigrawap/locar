@@ -1,6 +1,5 @@
 BUILDPATH=$(CURDIR)
 BINPATH=$(BUILDPATH)/bin
-PKGPATH=$(BUILDPATH)/pkg
 
 GO=$(shell which go)
 GOGET=$(GO) get
@@ -20,7 +19,6 @@ GOBUILD=$(GO) build
 makedir:
 	@echo -n "make directories... "
 	@if [ ! -d $(BINPATH) ] ; then mkdir -p $(BINPATH) ; fi
-	@if [ ! -d $(PKGPATH) ] ; then mkdir -p $(PKGPATH) ; fi
 	@echo ok
 
 get_deps:
@@ -39,12 +37,13 @@ test:
 	@if [ ! -z "$(shell gofmt -l .)" ] ; then echo "gofmt had something to say:" && gofmt -l . && exit 1; fi
 	@echo -n "Validating with go vet"
 	@go vet ./...
+	@echo -n "Running tests"
+	@go test ./...
 	@echo ok
 
 clean:
 	@echo -n "clean directories... "
 	@rm -rf $(BINPATH)
-	@rm -rf $(PKGPATH)
 	@rm -rf $(BUILDPATH)/src
 	@echo ok
 

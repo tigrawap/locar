@@ -1,6 +1,6 @@
 //go:build darwin || freebsd
 
-package main
+package platform
 
 import "syscall"
 

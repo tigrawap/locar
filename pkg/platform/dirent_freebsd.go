@@ -1,7 +1,6 @@
 //go:build freebsd
-// +build freebsd
 
-package main
+package platform
 
 import "syscall"
 
