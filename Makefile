@@ -14,7 +14,7 @@ ARCH = $(word 2, $(PLATFORM))
 EXENAME=locar
 GOBUILD=$(GO) build
 
-.PHONY: makedir get_deps build test clean prepare default all $(PLATFORMS)
+.PHONY: makedir get_deps build test clean prepare default all dist $(PLATFORMS)
 .DEFAULT_GOAL := default
 
 makedir:
@@ -59,3 +59,5 @@ $(PLATFORMS):
 	@echo ok
 
 all: default $(PLATFORMS)
+
+dist: makedir linux/amd64 linux/arm64
