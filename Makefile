@@ -60,4 +60,4 @@ $(PLATFORMS):
 
 all: default $(PLATFORMS)
 
-dist: makedir linux/amd64 linux/arm64
+dist: makedir $(PLATFORMS)
