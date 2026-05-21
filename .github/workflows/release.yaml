@@ -10,7 +10,36 @@ permissions:
   contents: write
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Check formatting
+        run: |
+          fmt=$(gofmt -l .)
+          if [ -n "$fmt" ]; then
+            echo "gofmt reports: $fmt"
+            exit 1
+          fi
+
+      - name: Test
+        run: go test -race ./...
+
   release:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
