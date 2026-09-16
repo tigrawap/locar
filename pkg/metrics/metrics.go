@@ -2,6 +2,11 @@
 // operations. It is opt-in: a caller that does not care about metrics can
 // simply leave the *Metrics value unset (nil), since every method on
 // *Metrics is a safe no-op when the receiver is nil.
+//
+// See docs/metrics.md in the repository root for the full guide:
+// registration options, exposing the counters over HTTP, sharing a
+// *Metrics across scans, the metric/operation reference, and example
+// PromQL.
 package metrics
 
 import (

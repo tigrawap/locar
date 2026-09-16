@@ -108,3 +108,8 @@ eng, err := engine.New(ctx, cfg)
 ```
 
 Leaving `Config.Metrics` nil disables metrics entirely, at no extra cost.
+
+See `docs/metrics.md` for the full guide: the other registration options
+(`New`/`Register`/`MustRegister`, default vs. a custom registry), exposing
+the counters over HTTP with `promhttp`, sharing one `*metrics.Metrics`
+across scans, the full metric/operation reference, and example PromQL.
