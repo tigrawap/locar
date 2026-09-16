@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"golang.org/x/sync/semaphore"
+
+	"github.com/tigrawap/locar/pkg/metrics"
 )
 
 func (e *Explorer) dumpResults() {
@@ -51,6 +53,7 @@ func (e *Explorer) dumpResults() {
 				}
 				if e.withSizes {
 					fileStat, err := os.Lstat(result.name)
+					e.metrics.Record(metrics.OpLstat, err)
 					if err != nil {
 						log.Println(err)
 						outputBuffer.WriteString("0")

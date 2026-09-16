@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/tigrawap/locar/pkg/metrics"
 )
 
 // runDeleteWorkers consumes per-directory batches and deletes their entries.
@@ -31,8 +33,10 @@ func (e *Explorer) runDeleteWorkers(workers int) {
 					var err error
 					if e.deleteAll {
 						err = os.RemoveAll(name)
+						e.metrics.Record(metrics.OpDeleteRecursive, err)
 					} else {
 						err = os.Remove(name)
+						e.metrics.Record(metrics.OpDelete, err)
 					}
 					if err != nil {
 						atomic.AddInt64(&e.totalDeleteFailed, 1)

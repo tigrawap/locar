@@ -83,3 +83,33 @@ Help Options:
 Arguments:
   directories:         Directories to search, using current directory if missing
 ```
+
+Using locar as a library, with Prometheus metrics
+
+`locar` is also usable as a Go library via `pkg/engine`. If you want counters for
+filesystem operations (opendir, readdir, stat, lstat, delete), wire up `pkg/metrics`
+and pass it into `engine.Config`:
+
+```go
+import (
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/tigrawap/locar/pkg/engine"
+	"github.com/tigrawap/locar/pkg/metrics"
+)
+
+m, err := metrics.RegisterMetrics(prometheus.DefaultRegisterer)
+if err != nil {
+	log.Fatal(err)
+}
+
+cfg := engine.Config{ /* ... */ Metrics: m }
+eng, err := engine.New(ctx, cfg)
+```
+
+Leaving `Config.Metrics` nil disables metrics entirely, at no extra cost.
+
+See `docs/metrics.md` for the full guide: the other registration options
+(`New`/`Register`/`MustRegister`, default vs. a custom registry), exposing
+the counters over HTTP with `promhttp`, sharing one `*metrics.Metrics`
+across scans, the full metric/operation reference, and example PromQL.
