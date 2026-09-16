@@ -12,6 +12,7 @@ import (
 
 	"github.com/gobwas/glob"
 
+	"github.com/tigrawap/locar/pkg/metrics"
 	"github.com/tigrawap/locar/pkg/platform"
 )
 
@@ -97,6 +98,7 @@ type Explorer struct {
 	withSizes      bool
 	withTimes      bool
 	out            io.Writer
+	metrics        *metrics.Metrics
 }
 
 // New creates a new Explorer with the given context and configuration.
@@ -140,6 +142,7 @@ func New(ctx context.Context, cfg Config) (*Explorer, error) {
 	e.delete = cfg.Delete
 	e.deleteAll = cfg.DeleteAll
 	e.quiet = cfg.Quiet
+	e.metrics = cfg.Metrics
 	if cfg.Output != nil {
 		e.out = cfg.Output
 	} else {
@@ -306,6 +309,7 @@ func createTimeConditions(olderThanInput, newerThanInput *time.Duration) (timeCo
 
 func (e *Explorer) checkFileTimeConditions(fullpath string) (Result, bool, error) {
 	atime, mtime, ctime, err := platform.GetFileTimes(fullpath)
+	e.metrics.Record(metrics.OpStat, err)
 	if err != nil {
 		log.Println(err)
 		return Result{}, false, err

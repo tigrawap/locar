@@ -7,7 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/tigrawap/locar/internal/testutil"
+	"github.com/tigrawap/locar/pkg/metrics"
 )
 
 // outputLines returns a sorted slice of non-empty lines from the captured output.
@@ -566,5 +569,97 @@ func TestEngine_Concurrent(t *testing.T) {
 	lines := outputLines(&sb)
 	if len(lines) < 60 {
 		t.Errorf("expected at least 60 entries (10 dirs + 50 files), got %d", len(lines))
+	}
+}
+
+// metricValue returns the value of the counter series identified by name
+// and the given "operation" label value, gathered from reg. Returns 0 if
+// the series has no recorded value (or doesn't exist).
+func metricValue(t *testing.T, reg *prometheus.Registry, name, op string) float64 {
+	t.Helper()
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, mf := range families {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetName() == "operation" && l.GetValue() == op {
+					return m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return 0
+}
+
+func TestEngine_Metrics(t *testing.T) {
+	s := testutil.New(t)
+	s.Mkdir("subdir")
+	s.WriteFile("file1.txt", "hello")
+	s.WriteFile("subdir/file2.txt", "world")
+
+	reg := prometheus.NewRegistry()
+	m := metrics.New()
+	if err := m.Register(reg); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	var sb testutil.SyncBuffer
+	cfg := Config{
+		Threads:       4,
+		ResultThreads: 4,
+		Output:        &sb,
+		Types:         []string{"file", "dir"},
+		Metrics:       m,
+	}
+	e, err := New(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.AddDir(s.Root)
+	e.Start()
+	e.Wait()
+
+	if got := metricValue(t, reg, "locar_file_operations_total", metrics.OpOpenDir); got <= 0 {
+		t.Errorf("opendir op counter = %v, want > 0", got)
+	}
+	if got := metricValue(t, reg, "locar_file_operations_total", metrics.OpReadDir); got <= 0 {
+		t.Errorf("readdir op counter = %v, want > 0", got)
+	}
+}
+
+func TestEngine_Metrics_Delete(t *testing.T) {
+	s := testutil.New(t)
+	s.WriteFile("delete.txt", "delete")
+
+	reg := prometheus.NewRegistry()
+	m := metrics.New()
+	if err := m.Register(reg); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	var sb testutil.SyncBuffer
+	cfg := Config{
+		Threads:       4,
+		ResultThreads: 4,
+		Output:        &sb,
+		Types:         []string{"file"},
+		Delete:        true,
+		Metrics:       m,
+	}
+	e, err := New(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.AddDir(s.Root)
+	e.Start()
+	e.Wait()
+
+	if got := metricValue(t, reg, "locar_file_operations_total", metrics.OpDelete); got <= 0 {
+		t.Errorf("delete op counter = %v, want > 0", got)
 	}
 }

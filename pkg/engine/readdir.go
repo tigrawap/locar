@@ -10,6 +10,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/tigrawap/locar/pkg/metrics"
 	"github.com/tigrawap/locar/pkg/platform"
 )
 
@@ -67,9 +68,13 @@ func (e *Explorer) readdir(dir string) {
 		return
 	}
 	file, err := OpenWithDeadline(dir, e.timeout)
+	e.metrics.Op(metrics.OpOpenDir)
 	if err != nil {
 		if err == timeoutError {
+			e.metrics.OpTimeout(metrics.OpOpenDir)
 			err = errors.New(fmt.Sprintf("dir open: %s", err.Error()))
+		} else {
+			e.metrics.OpError(metrics.OpOpenDir)
 		}
 		if e.resilient {
 			log.Println(dir, err)
@@ -108,9 +113,13 @@ func (e *Explorer) readdir(dir string) {
 	for e.ctx.Err() == nil {
 		omittedByInclude = false
 		dirlength, err := ReadDirentWithDeadline(fd, buff, e.timeout)
+		e.metrics.Op(metrics.OpReadDir)
 		if err != nil {
 			if err == timeoutError {
+				e.metrics.OpTimeout(metrics.OpReadDir)
 				err = errors.New(fmt.Sprintf("readdir: %s", err.Error()))
+			} else {
+				e.metrics.OpError(metrics.OpReadDir)
 			}
 			if e.resilient {
 				log.Println(dir, err)

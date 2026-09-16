@@ -3,6 +3,8 @@ package engine
 import (
 	"io"
 	"time"
+
+	"github.com/tigrawap/locar/pkg/metrics"
 )
 
 // Config holds the configuration for building an Explorer.
@@ -26,4 +28,7 @@ type Config struct {
 	CtimeOlderThan, CtimeNewerThan time.Duration
 	Delete                         bool
 	DeleteAll                      bool
+	// Metrics, when set, receives counters for filesystem operations
+	// (opendir, readdir, stat, lstat, delete). Nil disables metrics.
+	Metrics *metrics.Metrics
 }
